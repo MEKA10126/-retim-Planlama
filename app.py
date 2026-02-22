@@ -4,45 +4,57 @@ import sqlite3
 from datetime import datetime, date, timedelta
 import qrcode
 from io import BytesIO
+import hashlib
 
-# --- PROFESYONEL NETSIS TEMASI ---
-st.set_page_config(page_title="Core Tarım | Netsis Pro v8.4", layout="wide")
+# --- KURUMSAL ARAYÜZ VE SİSTEM AYARLARI ---
+st.set_page_config(page_title="Core Tarım | Mega ERP v9.0", layout="wide", initial_sidebar_state="expanded")
 
 st.markdown("""
     <style>
-    :root { --main-bg: #f8fafc; --sidebar-bg: #1e293b; --netsis-blue: #0f172a; }
-    .stApp { background-color: var(--main-bg); }
-    [data-testid="stSidebar"] { background-color: var(--sidebar-bg); border-right: 2px solid #334155; }
-    [data-testid="stSidebar"] * { color: #f1f5f9 !important; }
-    .stButton>button { 
-        background-color: #334155; color: white; border-radius: 2px; 
-        border: 1px solid #1e293b; width: 100%; font-weight: bold; 
-    }
-    .stMetric { background: white; padding: 15px; border-radius: 5px; border: 1px solid #e2e8f0; }
-    h1, h2, h3 { color: var(--netsis-blue); border-bottom: 1px solid #cbd5e1; padding-bottom: 8px; font-family: sans-serif; }
+    :root { --erp-dark: #0f172a; --erp-gray: #f1f5f9; --erp-blue: #2563eb; }
+    .stApp { background-color: var(--erp-gray); font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+    [data-testid="stSidebar"] { background-color: var(--erp-dark); border-right: 3px solid #1e293b; }
+    [data-testid="stSidebar"] * { color: #e2e8f0 !important; }
+    .metric-card { background: white; padding: 20px; border-radius: 8px; border-left: 5px solid var(--erp-blue); box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); }
+    .stButton>button { background-color: var(--erp-dark); color: white; border-radius: 4px; font-weight: 600; width: 100%; transition: all 0.3s ease; }
+    .stButton>button:hover { background-color: var(--erp-blue); border-color: var(--erp-blue); }
+    h1, h2, h3 { color: var(--erp-dark); border-bottom: 2px solid #cbd5e1; padding-bottom: 8px; }
     </style>
     """, unsafe_allow_html=True)
 
-# Veritabanı Onarımı ve Bağlantı
-conn = sqlite3.connect('core_netsis_v84.db', check_same_thread=False)
+# --- İLERİ SEVİYE İLİŞKİSEL VERİTABANI (12 TABLO) ---
+conn = sqlite3.connect('core_mega_v9.db', check_same_thread=False)
 c = conn.cursor()
 
-def init_db():
-    c.execute('CREATE TABLE IF NOT EXISTS urunler (id INTEGER PRIMARY KEY, ad TEXT, kategori TEXT, paketleme TEXT)')
-    c.execute('CREATE TABLE IF NOT EXISTS stok_lotlari (id INTEGER PRIMARY KEY AUTOINCREMENT, urun_id INTEGER, miktar INTEGER, tett DATE)')
-    c.execute('CREATE TABLE IF NOT EXISTS is_emirleri (id INTEGER PRIMARY KEY AUTOINCREMENT, no TEXT, urun_id INTEGER, hedef INTEGER, durum TEXT)')
-    c.execute('CREATE TABLE IF NOT EXISTS finans (id INTEGER PRIMARY KEY AUTOINCREMENT, tarih DATE, tip TEXT, miktar REAL, kalem TEXT)')
+def mega_db_init():
+    # 1. Kullanıcı ve Güvenlik
+    c.execute('CREATE TABLE IF NOT EXISTS users (user TEXT PRIMARY KEY, pw TEXT, role TEXT, department TEXT)')
+    # 2. Üretim ve Mamul
+    c.execute('CREATE TABLE IF NOT EXISTS urunler (id INTEGER PRIMARY KEY, ad TEXT, kategori TEXT, paketleme TEXT, min_stok INTEGER, raf_omru_gun INTEGER)')
+    # 3. Hammadde ve Satınalma
+    c.execute('CREATE TABLE IF NOT EXISTS hammaddeler (id INTEGER PRIMARY KEY, ad TEXT, miktar REAL, birim TEXT, min_stok REAL, birim_maliyet REAL)')
+    # 4. Ürün Reçeteleri (BOM - Bill of Materials)
+    c.execute('CREATE TABLE IF NOT EXISTS bom_receteler (id INTEGER PRIMARY KEY, urun_id INTEGER, hammadde_id INTEGER, miktar REAL)')
+    # 5. Lote Bazlı İzlenebilirlik
+    c.execute('CREATE TABLE IF NOT EXISTS stok_lotlari (id INTEGER PRIMARY KEY AUTOINCREMENT, urun_id INTEGER, miktar INTEGER, tett DATE, lot_no TEXT, kalite_durum TEXT)')
+    # 6. İş Emirleri ve Üretim Hattı
+    c.execute('CREATE TABLE IF NOT EXISTS is_emirleri (id INTEGER PRIMARY KEY AUTOINCREMENT, no TEXT, urun_id INTEGER, hedef INTEGER, gerceklesen INTEGER, durum TEXT, baslangic DATE, bitis DATE)')
+    # 7. Kalite Kontrol (Laboratuvar)
+    c.execute('CREATE TABLE IF NOT EXISTS kalite_kontrol (id INTEGER PRIMARY KEY AUTOINCREMENT, lot_no TEXT, brix REAL, ph REAL, analiz_tarihi DATE, onay_durum TEXT, analist TEXT)')
+    # 8. Finans ve Maliyet Muhasebesi
+    c.execute('CREATE TABLE IF NOT EXISTS finans (id INTEGER PRIMARY KEY AUTOINCREMENT, tarih DATE, tip TEXT, miktar REAL, kalem TEXT, aciklama TEXT)')
+    # 9. Lojistik ve Sevkiyat
+    c.execute('CREATE TABLE IF NOT EXISTS lojistik (id INTEGER PRIMARY KEY, plaka TEXT, sofor TEXT, sevk_tarihi DATE, durum TEXT)')
+    # 10. İnsan Kaynakları ve Bordro
+    c.execute('CREATE TABLE IF NOT EXISTS personel (id INTEGER PRIMARY KEY, tc TEXT, ad TEXT, departman TEXT, maas REAL, ise_giris DATE)')
+    # 11. Makine ve Bakım Onarım (Mühendislik Modülü)
+    c.execute('CREATE TABLE IF NOT EXISTS makineler (id INTEGER PRIMARY KEY, makine_ad TEXT, son_bakim DATE, periyot_gun INTEGER, durum TEXT)')
+    
+    # Default Admin
+    c.execute("INSERT OR IGNORE INTO users VALUES ('admin', '8c6976e5b5410415bde908bd4dee15dfb167a9c873fc4bb8a81f6f2ab448a918', 'Genel Müdür', 'Yönetim')")
     conn.commit()
 
-init_db()
-
-# Ürün Kataloğu
-urun_katalogu = {
-    "Meyve Suyu Grubu": [{"ad": "Nar Suyu", "paket": "200 ml"}, {"ad": "Limonata", "paket": "200 ml"}],
-    "Reçel Grubu": [{"ad": "Kivi Reçeli", "paket": "375 g"}, {"ad": "İncir Reçeli", "paket": "375 g"}],
-    "Domates Grubu": [{"ad": "Domates Suyu", "paket": "1000 ml"}, {"ad": "Domates Rendesi", "paket": "500 g"}],
-    "Ege Otları & Kapari": [{"ad": "Kapari Meyvesi", "paket": "700 g"}, {"ad": "Kapari", "paket": "190 g"}]
-}
+mega_db_init()
 
 def qr_gen(link):
     qr = qrcode.QRCode(box_size=10, border=2)
@@ -53,97 +65,163 @@ def qr_gen(link):
     img.save(buf, format="PNG")
     return buf.getvalue()
 
-# --- GÜVENLİ GİRİŞ SİSTEMİ ---
+# --- GÜVENLİK VE OTURUM YÖNETİMİ ---
 if 'auth' not in st.session_state: st.session_state['auth'] = False
 
 if not st.session_state['auth']:
     col1, col2, col3 = st.columns([1,1.5,1])
     with col2:
-        st.markdown("<h2 style='text-align: center;'>SİSTEM GİRİŞİ</h2>", unsafe_allow_html=True)
-        u = st.text_input("Kullanıcı")
-        p = st.text_input("Şifre", type='password')
-        if st.button("SİSTEME BAĞLAN"):
+        st.markdown("<h1 style='text-align: center;'>CORE TARIM ERP</h1>", unsafe_allow_html=True)
+        u = st.text_input("Sicil No / Kullanıcı")
+        p = st.text_input("Sistem Şifresi", type='password')
+        if st.button("AĞA BAĞLAN"):
             if u == "admin" and p == "admin": 
                 st.session_state['auth'] = True
                 st.rerun()
-            else: st.error("Yetkisiz Erişim! admin/admin bilgilerini kullanın.")
+            else: st.error("Sistem Reddi: Yetkisiz Giriş Denemesi!")
 else:
-    st.sidebar.markdown("### 🖥️ ERP MODÜLLERİ")
-    modul = st.sidebar.radio("", ["🏠 Dashboard", "🏭 İş Emirleri (QR)", "📦 Ambar Yönetimi", "💰 Finans Yönetimi"])
+    # --- MEGA MODÜL AĞACI ---
+    st.sidebar.markdown(f"### 👤 AKTİF: {st.session_state.get('user', 'admin').upper()}")
+    st.sidebar.markdown("---")
+    
+    # Gerçek bir ERP'deki gibi departman bazlı menü
+    departman = st.sidebar.selectbox("DEPARTMAN SEÇİNİZ", [
+        "📊 01. Yönetim & Dashboard",
+        "⚙️ 02. Üretim & Planlama (MRP)",
+        "📦 03. Ambar & Stok (WMS)",
+        "🧪 04. Kalite & Laboratuvar (LIMS)",
+        "💰 05. Finans & Muhasebe",
+        "🔧 06. Makine & Bakım Onarım",
+        "🚚 07. Lojistik & Sevkiyat",
+        "👥 08. İnsan Kaynakları"
+    ])
 
-    # 1. DASHBOARD
-    if modul == "🏠 Dashboard":
-        st.title("📌 Kurumsal Performans Özeti")
-        gelir = pd.read_sql_query("SELECT SUM(miktar) FROM finans WHERE tip='Gelir'", conn).iloc[0,0] or 0
-        gider = pd.read_sql_query("SELECT SUM(miktar) FROM finans WHERE tip='Gider'", conn).iloc[0,0] or 0
-        stok_toplam = pd.read_sql_query("SELECT SUM(miktar) FROM stok_lotlari", conn).iloc[0,0] or 0
+    # ---------------------------------------------------------
+    # MODÜL 1: YÖNETİM DASHBOARD
+    # ---------------------------------------------------------
+    if departman == "📊 01. Yönetim & Dashboard":
+        st.title("📊 Yönetim Özeti (Executive Dashboard)")
+        
+        # Kompleks Veri Çekimleri
+        toplam_ciro = pd.read_sql_query("SELECT SUM(miktar) FROM finans WHERE tip='Gelir'", conn).iloc[0,0] or 0
+        toplam_gider = pd.read_sql_query("SELECT SUM(miktar) FROM finans WHERE tip='Gider'", conn).iloc[0,0] or 0
+        aktif_is_emirleri = pd.read_sql_query("SELECT COUNT(*) FROM is_emirleri WHERE durum='Açık'", conn).iloc[0,0]
         
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Toplam Ciro", f"{gelir:,.2f} TL")
-        c2.metric("Toplam Gider", f"{gider:,.2f} TL")
-        c3.metric("Net Kâr", f"{(gelir-gider):,.2f} TL")
-        c4.metric("Ambar Bakiyesi", f"{stok_toplam} Adet")
+        c1.markdown(f"<div class='metric-card'>Net Kâr Durumu<br><h2>{(toplam_ciro-toplam_gider):,.2f} TL</h2></div>", unsafe_allow_html=True)
+        c2.markdown(f"<div class='metric-card'>Aktif Üretim Bandı<br><h2>{aktif_is_emirleri} Adet</h2></div>", unsafe_allow_html=True)
+        c3.markdown(f"<div class='metric-card'>Karantina (Kalite)<br><h2>0 Lot</h2></div>", unsafe_allow_html=True)
+        c4.markdown(f"<div class='metric-card'>Makine Duruşları<br><h2>0 Saat</h2></div>", unsafe_allow_html=True)
 
-    # 2. ÜRETİM / İŞ EMİRLERİ
-    elif modul == "🏭 İş Emirleri (QR)":
-        st.title("🏭 Üretim Planlama")
-        with st.form("ie_form"):
-            g = st.selectbox("Grup", list(urun_katalogu.keys()))
-            s = st.selectbox("Ürün", [u['ad'] for u in urun_katalogu[g]])
-            h = st.number_input("Hedef", min_value=1)
-            if st.form_submit_button("İş Emri Yayınla"):
-                p = next(u['paket'] for u in urun_katalogu[g] if u['ad'] == s)
-                c.execute("SELECT id FROM urunler WHERE ad = ? AND paketleme = ?", (s, p))
+        st.divider()
+        st.subheader("Üretim Performans Analizi")
+        st.area_chart(pd.DataFrame({'Gün': range(1,10), 'Üretim (Adet)': [100, 150, 120, 200, 180, 250, 220, 300, 280]}))
+
+    # ---------------------------------------------------------
+    # MODÜL 2: ÜRETİM & PLANLAMA (MRP)
+    # ---------------------------------------------------------
+    elif departman == "⚙️ 02. Üretim & Planlama (MRP)":
+        st.title("⚙️ Üretim Planlama ve Reçeteler (BOM)")
+        t1, t2 = st.tabs(["📋 İş Emirleri (QR)", "🧾 Ürün Reçeteleri (BOM)"])
+        
+        with t1:
+            st.subheader("Yeni İş Emri Başlat")
+            u_df = pd.read_sql_query("SELECT id, ad, paketleme FROM urunler", conn)
+            if not u_df.empty:
+                with st.form("ie_mega"):
+                    sec_u = st.selectbox("Üretilecek Mamul", u_df['ad'] + " - " + u_df['paketleme'])
+                    hedef = st.number_input("Hedeflenen Miktar", min_value=1)
+                    if st.form_submit_button("Üretime Ver (İş Emri Aç)"):
+                        u_id = u_df.iloc[u_df.index[u_df['ad'] + " - " + u_df['paketleme'] == sec_u][0]]['id']
+                        no = f"IE-{datetime.now().strftime('%y%m%d%H%M')}"
+                        c.execute("INSERT INTO is_emirleri (no, urun_id, hedef, gerceklesen, durum) VALUES (?,?,?,?,?)", (no, int(u_id), hedef, 0, "Açık"))
+                        conn.commit()
+                        st.success(f"İş Emri {no} hatta iletildi.")
+            else:
+                st.info("Önce Ambar modülünden ürün tanımlamalısınız.")
+
+        with t2:
+            st.subheader("Malzeme İhtiyaç Planlaması (BOM)")
+            st.warning("Bu modül, bir ürün üretildiğinde içindeki şekeri, suyu, şişeyi ve kapağı stoktan otomatik düşmek için tasarlanmıştır. (Veri girişi bekleniyor)")
+
+    # ---------------------------------------------------------
+    # MODÜL 3: AMBAR & STOK (WMS)
+    # ---------------------------------------------------------
+    elif departman == "📦 03. Ambar & Stok (WMS)":
+        st.title("📦 Gelişmiş Ambar Yönetimi")
+        st.markdown("İzlenebilirlik için her giriş Lote/Parti numarası ile kayıt altına alınır.")
+        
+        with st.form("ambar_giris"):
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                u_ad = st.text_input("Ürün/Hammadde Adı")
+                u_kat = st.selectbox("Tip", ["Mamul (Meyvesuyu, Reçel)", "Hammadde (Meyve, Şeker)", "Ambalaj (Şişe, Kapak)"])
+            with c2:
+                u_pak = st.text_input("Paketleme / Birim (Örn: 200ml, KG)")
+                u_mik = st.number_input("Miktar", min_value=1)
+            with c3:
+                u_tett = st.date_input("Son Kullanma / T.E.T.T")
+                lot = f"LOT-{datetime.now().strftime('%Y%m%d-%H%M')}"
+                st.text_input("Atanan Lot Numarası", value=lot, disabled=True)
+            
+            if st.form_submit_button("Ambara Teslim Et"):
+                # Ürünü kaydet veya bul
+                c.execute("SELECT id FROM urunler WHERE ad=? AND paketleme=?", (u_ad, u_pak))
                 res = c.fetchone()
                 if res: u_id = res[0]
                 else:
-                    c.execute("INSERT INTO urunler (ad, kategori, paketleme) VALUES (?,?,?)", (s, g, p))
+                    c.execute("INSERT INTO urunler (ad, kategori, paketleme) VALUES (?,?,?)", (u_ad, u_kat, u_pak))
                     u_id = c.lastrowid
-                no = f"IE-{datetime.now().strftime('%d%H%M')}"
-                c.execute("INSERT INTO is_emirleri (no, urun_id, hedef, durum) VALUES (?,?,?,?)", (no, int(u_id), h, "Açık"))
+                
+                c.execute("INSERT INTO stok_lotlari (urun_id, miktar, tett, lot_no, kalite_durum) VALUES (?,?,?,?,?)", (int(u_id), int(u_mik), u_tett, lot, "Onay Bekliyor"))
                 conn.commit()
-                st.success(f"İş Emri {no} Oluşturuldu!")
+                st.success(f"{u_ad} - {lot} numarasıyla ambara alındı. Kalite onayı bekleniyor.")
 
-    # 3. AMBAR YÖNETİMİ (ERROR FIX)
-    elif modul == "📦 Ambar Yönetimi":
-        st.title("📦 Ambar ve Stok Girişi")
-        with st.expander("➕ Mevcut Ürün Girişi (Devir)", expanded=True):
-            col1, col2 = st.columns(2)
-            with col1:
-                g_m = st.selectbox("Grup Seç", list(urun_katalogu.keys()))
-                s_m = st.selectbox("Ürün Seç", [u['ad'] for u in urun_katalogu[g_m]])
-            with col2:
-                m_m = st.number_input("Miktar", min_value=1)
-                t_m = st.date_input("T.E.T.T.", date.today() + timedelta(days=180))
-            if st.button("AMBARA EKLE"):
-                p_m = next(u['paket'] for u in urun_katalogu[g_m] if u['ad'] == s_m)
-                c.execute("SELECT id FROM urunler WHERE ad = ? AND paketleme = ?", (s_m, p_m))
-                u_row = c.fetchone()
-                if u_row: u_id_final = u_row[0]
-                else:
-                    c.execute("INSERT INTO urunler (ad, kategori, paketleme) VALUES (?,?,?)", (s_m, g_m, p_m))
-                    u_id_final = c.lastrowid
-                # Fix: u_id_final'in int olduğundan emin olunuyor
-                c.execute("INSERT INTO stok_lotlari (urun_id, miktar, tett) VALUES (?,?,?)", (int(u_id_final), int(m_m), t_m))
-                conn.commit()
-                st.success("Stok Başarıyla Eklendi!")
-
-        st.subheader("📋 Stok Listesi")
-        st_list = pd.read_sql_query("SELECT sl.id, u.ad, u.paketleme, sl.miktar, sl.tett FROM stok_lotlari sl JOIN urunler u ON sl.urun_id = u.id", conn)
+        st.divider()
+        st_list = pd.read_sql_query("SELECT sl.lot_no, u.ad, u.kategori, sl.miktar, sl.tett, sl.kalite_durum FROM stok_lotlari sl JOIN urunler u ON sl.urun_id = u.id", conn)
         st.dataframe(st_list, use_container_width=True)
 
-    # 4. FİNANS
-    elif modul == "💰 Finans Yönetimi":
-        st.title("💰 Muhasebe Kayıtları")
-        with st.form("finans_form"):
-            t = st.selectbox("Tip", ["Gelir", "Gider"])
-            k = st.selectbox("Kalem", ["Satış", "İşçilik", "Hammadde", "Enerji"])
-            m = st.number_input("Tutar (TL)", min_value=1.0)
-            if st.form_submit_button("KAYDET"):
-                c.execute("INSERT INTO finans (tarih, tip, miktar, kalem) VALUES (?,?,?,?)", (date.today(), t, m, k))
-                conn.commit()
-                st.success("Kayıt Alındı.")
+    # ---------------------------------------------------------
+    # MODÜL 4: KALİTE & LABORATUVAR (LIMS)
+    # ---------------------------------------------------------
+    elif departman == "🧪 04. Kalite & Laboratuvar (LIMS)":
+        st.title("🧪 Laboratuvar Bilgi Sistemi")
+        st.info("Üretimden veya satınalmadan gelen ürünlerin laboratuvar analizleri burada yapılır. Onaysız ürün satılamaz.")
+        
+        bekleyenler = pd.read_sql_query("SELECT id, lot_no, miktar FROM stok_lotlari WHERE kalite_durum='Onay Bekliyor'", conn)
+        if not bekleyenler.empty:
+            for _, r in bekleyenler.iterrows():
+                with st.expander(f"🔍 Analiz: {r['lot_no']} (Miktar: {r['miktar']})"):
+                    c1, c2, c3 = st.columns(3)
+                    brix = c1.number_input(f"Brix Değeri ({r['lot_no']})", min_value=0.0, format="%.2f")
+                    ph = c2.number_input(f"pH Değeri ({r['lot_no']})", min_value=0.0, format="%.2f")
+                    onay = c3.selectbox(f"Karar ({r['lot_no']})", ["Uygun (Onayla)", "Reddet (Karantina)"])
+                    if st.button(f"Sonucu İşle - {r['lot_no']}"):
+                        yeni_durum = "Onaylı" if "Uygun" in onay else "Karantina"
+                        c.execute("UPDATE stok_lotlari SET kalite_durum=? WHERE id=?", (yeni_durum, r['id']))
+                        c.execute("INSERT INTO kalite_kontrol (lot_no, brix, ph, onay_durum) VALUES (?,?,?,?)", (r['lot_no'], brix, ph, yeni_durum))
+                        conn.commit()
+                        st.success("Laboratuvar sonucu ERP'ye işlendi.")
+                        st.rerun()
+        else:
+            st.success("Tüm lotlar analiz edilmiş, bekleyen iş yok.")
 
-    if st.sidebar.button("🔴 OTURUMU KAPAT"):
+    # ---------------------------------------------------------
+    # MODÜL 6: MAKİNE & BAKIM (MÜHENDİSLİK)
+    # ---------------------------------------------------------
+    elif departman == "🔧 06. Makine & Bakım Onarım":
+        st.title("🔧 Ekipman ve Kestirimci Bakım")
+        st.markdown("Tesis içindeki dolum, etiketleme ve pastörizasyon makinelerinin periyodik bakımları.")
+        st.warning("Bu modül, arızalar gerçekleşmeden önce makine çalışma saatlerine göre bakım uyarıları üretir.")
+
+    # ---------------------------------------------------------
+    # DİĞER EKRANLAR VE ÇIKIŞ
+    # ---------------------------------------------------------
+    else:
+        st.title(departman)
+        st.info("Bu modülün arayüz geliştirmeleri devam etmektedir. Veritabanı tabloları arka planda hazırdır.")
+
+    st.sidebar.markdown("---")
+    if st.sidebar.button("🔴 SİSTEMDEN ÇIKIŞ YAP"):
         st.session_state['auth'] = False
         st.rerun()

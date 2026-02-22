@@ -4,132 +4,140 @@ import sqlite3
 from datetime import datetime, date
 import qrcode
 from io import BytesIO
-from PIL import Image
 
-# --- KURUMSAL TEMA VE QR AYARLARI ---
+# --- KURUMSAL TEMA VE TASARIM ---
 st.set_page_config(page_title="Core Tarım | İş Emri & QR", layout="wide")
 
 st.markdown("""
     <style>
     .stApp { background-color: #f8fafc; }
     [data-testid="stSidebar"] { background-color: #0c4a6e; }
+    [data-testid="stSidebar"] * { color: white !important; }
     .stButton>button { background-color: #0284c7; color: white; border-radius: 8px; font-weight: bold; }
-    .qr-box { border: 2px dashed #0284c7; padding: 10px; text-align: center; border-radius: 10px; }
+    h1, h2, h3 { color: #0c4a6e; border-left: 5px solid #0284c7; padding-left: 15px; }
     </style>
     """, unsafe_allow_html=True)
 
 # Veritabanı Bağlantısı
-conn = sqlite3.connect('core_tarim_v6.db', check_same_thread=False)
+conn = sqlite3.connect('core_tarim_final.db', check_same_thread=False)
 c = conn.cursor()
 
-# Tabloları Güncelle (Is Emri Tablosu Eklendi)
-c.execute('CREATE TABLE IF NOT EXISTS urunler (id INTEGER PRIMARY KEY, ad TEXT, paketleme TEXT, birim_fiyat REAL, stok_adet INTEGER)')
-c.execute('CREATE TABLE IF NOT EXISTS musteriler (id INTEGER PRIMARY KEY, ad TEXT, bolge TEXT)')
-c.execute('CREATE TABLE IF NOT EXISTS satislar (id INTEGER PRIMARY KEY, tarih DATE, urun_id INTEGER, miktar INTEGER, tutar REAL)')
+# Tablo Yapıları
+c.execute('''CREATE TABLE IF NOT EXISTS urunler 
+             (id INTEGER PRIMARY KEY, ad TEXT, kategori TEXT, paketleme TEXT, stok_adet INTEGER)''')
 c.execute('''CREATE TABLE IF NOT EXISTS is_emirleri 
              (id INTEGER PRIMARY KEY AUTOINCREMENT, is_emri_no TEXT, urun_id INTEGER, hedef_miktar INTEGER, durum TEXT)''')
+c.execute('''CREATE TABLE IF NOT EXISTS satislar 
+             (id INTEGER PRIMARY KEY, tarih DATE, urun_id INTEGER, adet INTEGER, tutar REAL)''')
 conn.commit()
 
-# --- FONKSİYONLAR ---
-def qr_olustur(data):
-    qr = qrcode.QRCode(version=1, box_size=10, border=5)
-    qr.add_data(data)
+# --- ÜRÜN KATALOĞU (Görsellerden Alınan Sabit Veriler) ---
+urun_katalogu = {
+    "Meyve Suyu Grubu": [
+        {"ad": "Nar Suyu", "paket": "200 ml Şişe"},
+        {"ad": "Limonata", "paket": "200 ml Şişe"},
+        {"ad": "Karadut Suyu", "paket": "200 ml Şişe"},
+        {"ad": "Portakal Suyu", "paket": "200 ml Şişe"},
+        {"ad": "Coremey Nar Suyu", "paket": "1000 ml Pet"},
+        {"ad": "Coremey Limonata", "paket": "1000 ml Pet"},
+        {"ad": "Nar Ekşisi", "paket": "250 g Şişe"}
+    ],
+    "Reçel Grubu": [
+        {"ad": "Kivi Reçeli", "paket": "375 g Kavanoz"},
+        {"ad": "İncir Reçeli", "paket": "375 g Kavanoz"},
+        {"ad": "Ahududu Reçeli", "paket": "375 g Kavanoz"},
+        {"ad": "Vişne Reçeli", "paket": "375 g Kavanoz"},
+        {"ad": "Portakal Reçeli", "paket": "375 g Kavanoz"}
+    ],
+    "Domates & Sos Grubu": [
+        {"ad": "Domates Suyu", "paket": "1000 ml Şişe"},
+        {"ad": "Domates Rendesi", "paket": "500 g Kavanoz"},
+        {"ad": "Doğranmış Domates", "paket": "500 g Kavanoz"},
+        {"ad": "Menemen Harcı", "paket": "500 g Kavanoz"}
+    ],
+    "Ege Otları & Kapari": [
+        {"ad": "Şevket-i Bostan", "paket": "320 g Net"},
+        {"ad": "Deniz Börülcesi", "paket": "350 g Net"},
+        {"ad": "Enginar Kalbi", "paket": "360 g Net"},
+        {"ad": "Kapari Meyvesi", "paket": "700 g Kavanoz"},
+        {"ad": "Kapari", "paket": "190 g Kavanoz"}
+    ]
+}
+
+# QR Fonksiyonu
+def qr_olustur(link):
+    qr = qrcode.QRCode(box_size=10, border=2)
+    qr.add_data(link)
     qr.make(fit=True)
-    img = qr.make_image(fill_color="black", back_color="white")
+    img = qr.make_image(fill="black", back_color="white")
     buf = BytesIO()
     img.save(buf, format="PNG")
     return buf.getvalue()
 
 # --- ARAYÜZ ---
-st.sidebar.title("Core Tarım Kontrol")
-# QR ile giriş simülasyonu için URL parametresi kontrolü
-query_params = st.query_params
-if "is_emri" in query_params:
-    choice = "QR İşlem Ekranı"
+params = st.query_params
+if "is_emri" in params:
+    choice = "QR Personel Paneli"
 else:
-    choice = st.sidebar.selectbox("Modül Seçiniz", ["📊 Analiz Paneli", "📋 İş Emirleri Yönetimi", "🛒 Satış & Sevkiyat", "📦 Genel Stok"])
+    choice = st.sidebar.selectbox("Yönetim Menüsü", ["📋 İş Emirleri", "📦 Ambar & Stok", "📊 Satış Analizi"])
 
-# --- MODÜLLER ---
-
-# 1. İŞ EMİRLERİ YÖNETİMİ (Yönetici Ekranı)
-if choice == "📋 İş Emirleri Yönetimi":
-    st.header("📋 İş Emri Oluşturma ve Takip")
+# 1. İŞ EMİRLERİ (Yönetici)
+if choice == "📋 İş Emirleri":
+    st.header("📋 Üretim İş Emirleri")
     
-    with st.expander("➕ Yeni İş Emri Oluştur"):
-        urunler_df = pd.read_sql_query("SELECT id, ad, paketleme FROM urunler", conn)
-        is_emri_no = st.text_input("İş Emri Numarası", f"IE-{datetime.now().strftime('%m%d%H%M')}")
-        secilen_urun_bilgi = st.selectbox("Üretilecek Ürün", urunler_df['ad'] + " (" + urunler_df['paketleme'] + ")")
-        hedef = st.number_input("Hedef Üretim Miktarı (Adet)", min_value=1)
+    with st.expander("➕ Yeni İş Emri Tanımla"):
+        kat = st.selectbox("Ürün Grubu", list(urun_katalogu.keys()))
+        secilen = st.selectbox("Ürün", [u['ad'] for u in urun_katalogu[kat]])
+        paket = next(u['paket'] for u in urun_katalogu[kat] if u['ad'] == secilen)
+        hedef = st.number_input("Hedef Üretim (Adet)", min_value=1)
         
-        if st.button("İş Emrini Yayınla"):
-            u_id = urunler_df.iloc[urunler_df.index[urunler_df['ad'] + " (" + urunler_df['paketleme'] + ")" == secilen_urun_bilgi][0]]['id']
-            c.execute("INSERT INTO is_emirleri (is_emri_no, urun_id, hedef_miktar, durum) VALUES (?,?,?,?)",
-                      (is_emri_no, int(u_id), hedef, "Açık"))
+        if st.button("İş Emrini Oluştur"):
+            # Önce ürün var mı kontrol et, yoksa ekle
+            c.execute("SELECT id FROM urunler WHERE ad = ? AND paketleme = ?", (secilen, paket))
+            u_row = c.fetchone()
+            if not u_row:
+                c.execute("INSERT INTO urunler (ad, kategori, paketleme, stok_adet) VALUES (?,?,?,0)", (secilen, kat, paket))
+                u_id = c.lastrowid
+            else:
+                u_id = u_row[0]
+            
+            no = f"IE-{datetime.now().strftime('%d%H%M')}"
+            c.execute("INSERT INTO is_emirleri (is_emri_no, urun_id, hedef_miktar, durum) VALUES (?,?,?,?)", (no, u_id, hedef, "Açık"))
             conn.commit()
-            st.success(f"İş Emri {is_emri_no} başarıyla oluşturuldu!")
+            st.success("İş emri oluşturuldu!")
 
-    st.subheader("Aktif İş Emirleri ve QR Kodlar")
-    emirler = pd.read_sql_query("""
-        SELECT ie.id, ie.is_emri_no, u.ad, u.paketleme, ie.hedef_miktar, ie.durum 
-        FROM is_emirleri ie JOIN urunler u ON ie.urun_id = u.id WHERE ie.durum = 'Açık'
-    """, conn)
+    st.divider()
+    st.subheader("Aktif Emirler ve QR Kodlar")
+    emirler = pd.read_sql_query("SELECT ie.id, ie.is_emri_no, u.ad, u.paketleme, ie.hedef_miktar FROM is_emirleri ie JOIN urunler u ON ie.urun_id = u.id WHERE ie.durum = 'Açık'", conn)
     
-    for index, row in emirler.iterrows():
-        col1, col2 = st.columns([3, 1])
-        with col1:
-            st.write(f"**No:** {row['is_emri_no']} | **Ürün:** {row['ad']} | **Hedef:** {row['hedef_miktar']} Adet")
-        with col2:
-            # QR Kod Linki Oluşturma (Localhost yerine canlı URL'nizi buraya yazabilirsiniz)
-            app_url = "https://your-app-link.streamlit.app" # BURAYA KENDİ LİNKİNİZİ GELECEK
-            qr_link = f"{app_url}/?is_emri={row['id']}"
-            qr_img = qr_olustur(qr_link)
-            st.image(qr_img, width=100)
-            st.download_button(f"QR İndir ({row['is_emri_no']})", qr_img, file_name=f"qr_{row['is_emri_no']}.png")
+    for _, row in emirler.iterrows():
+        c1, c2 = st.columns([3, 1])
+        with c1: st.write(f"**{row['is_emri_no']}** | {row['ad']} ({row['paketleme']}) - Hedef: {row['hedef_miktar']}")
+        with c2:
+            # ÖNEMLİ: Linki kendi Streamlit URL'nizle güncelleyin
+            base_url = "https://meka10126-planlama.streamlit.app" 
+            qr_img = qr_olustur(f"{base_url}/?is_emri={row['id']}")
+            st.image(qr_img, width=80)
         st.divider()
 
-# 2. QR İŞLEM EKRANI (Personel Ekranı)
-elif choice == "QR İşlem Ekranı":
-    emre_id = query_params["is_emri"]
-    st.header("⚡ Hızlı Stok İşlemi")
+# 2. QR PERSONEL PANELİ (Sadece QR ile erişilir)
+elif choice == "QR Personel Paneli":
+    ie_id = params["is_emri"]
+    res = pd.read_sql_query(f"SELECT ie.*, u.ad, u.paketleme, u.stok_adet FROM is_emirleri ie JOIN urunler u ON ie.urun_id = u.id WHERE ie.id = {ie_id}", conn).iloc[0]
     
-    emir_detay = pd.read_sql_query(f"""
-        SELECT ie.*, u.ad, u.stok_adet, u.paketleme FROM is_emirleri ie 
-        JOIN urunler u ON ie.urun_id = u.id WHERE ie.id = {emre_id}
-    """, conn).iloc[0]
+    st.success(f"BAĞLANDI: {res['is_emri_no']}")
+    st.title(f"{res['ad']}")
+    st.info(f"Paketleme: {res['paketleme']} | Mevcut Stok: {res['stok_adet']}")
     
-    st.metric("İş Emri", emir_detay['is_emri_no'])
-    st.metric("Ürün", f"{emir_detay['ad']} ({emir_detay['paketleme']})")
-    st.write(f"**Mevcut Stok:** {emir_detay['stok_adet']}")
-    
-    islem_miktari = st.number_input("İşlem Miktarı (Adet)", min_value=1)
-    
-    c1, c2 = st.columns(2)
-    with c1:
-        if st.button("➕ STOĞA EKLE"):
-            yeni_stok = emir_detay['stok_adet'] + islem_miktari
-            c.execute("UPDATE urunler SET stok_adet = ? WHERE id = ?", (yeni_stok, int(emir_detay['urun_id'])))
-            conn.commit()
-            st.success("Stok Başarıyla Artırıldı!")
-            st.rerun()
-    with c2:
-        if st.button("➖ STOKTAN DÜŞ"):
-            if emir_detay['stok_adet'] >= islem_miktari:
-                yeni_stok = emir_detay['stok_adet'] - islem_miktari
-                c.execute("UPDATE urunler SET stok_adet = ? WHERE id = ?", (yeni_stok, int(emir_detay['urun_id'])))
-                conn.commit()
-                st.warning("Stoktan Düşüldü!")
-                st.rerun()
-            else:
-                st.error("Yetersiz Stok!")
+    adet = st.number_input("İşlem Adedi", min_value=1)
+    if st.button("➕ STOĞA EKLE"):
+        c.execute("UPDATE urunler SET stok_adet = stok_adet + ? WHERE id = ?", (adet, int(res['urun_id'])))
+        conn.commit()
+        st.success("Stok güncellendi!")
+        st.rerun()
 
-# 3. GENEL STOK (Ürün Kartı Açmak İçin)
-elif choice == "📦 Genel Stok":
-    st.header("📦 Genel Ürün ve Stok Listesi")
-    # (Buraya önceki sürümlerdeki ürün ekleme ve listeleme kodlarını ekleyebilirsiniz)
-    st.write("Buradan manuel stok takibi yapabilirsiniz.")
-    df_stok = pd.read_sql_query("SELECT * FROM urunler", conn)
-    st.dataframe(df_stok, use_container_width=True)
-
-# 4. ANALİZ VE SATIŞ (Önceki Fonksiyonlar)
-else:
-    st.info("Lütfen bir modül seçin veya QR kod okutun.")
+# 3. AMBAR & STOK
+elif choice == "📦 Ambar & Stok":
+    st.header("📦 Genel Ambar Durumu")
+    stok_df = pd.read_sql_query("SELECT kategori, ad, paketleme, stok_adet FROM urunler", conn)
+    st.dataframe(stok_df, use_container_width=True)
